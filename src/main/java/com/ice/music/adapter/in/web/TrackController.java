@@ -33,6 +33,7 @@ public class TrackController {
     }
 
     @PostMapping
+    @Idempotent(namespace = "track:create")
     public ResponseEntity<TrackResponse> addTrack(
             @PathVariable UUID artistId,
             @Valid @RequestBody CreateTrackRequest request
