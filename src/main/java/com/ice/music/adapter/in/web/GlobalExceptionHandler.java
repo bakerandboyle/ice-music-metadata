@@ -44,4 +44,12 @@ public class GlobalExceptionHandler {
         problem.setType(URI.create("https://ice.com/problems/invalid-request"));
         return problem;
     }
+
+    @ExceptionHandler(IdempotencyConflictException.class)
+    public ProblemDetail handleIdempotencyConflict(IdempotencyConflictException ex) {
+        var problem = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());
+        problem.setTitle("Duplicate Request In Flight");
+        problem.setType(URI.create("https://ice.com/problems/idempotency-conflict"));
+        return problem;
+    }
 }

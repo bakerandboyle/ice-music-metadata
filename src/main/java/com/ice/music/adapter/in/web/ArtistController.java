@@ -49,6 +49,7 @@ public class ArtistController {
     }
 
     @PostMapping
+    @Idempotent(namespace = "artist:create")
     public ResponseEntity<ArtistResponse> createArtist(@Valid @RequestBody CreateArtistRequest request) {
         var response = ArtistResponse.from(createArtistUseCase.create(request.name()));
         return ResponseEntity
@@ -77,6 +78,7 @@ public class ArtistController {
     }
 
     @PostMapping("/{id}/aliases")
+    @Idempotent(namespace = "artist:alias")
     public ResponseEntity<AliasResponse> addAlias(
             @PathVariable UUID id,
             @Valid @RequestBody AddAliasRequest request
