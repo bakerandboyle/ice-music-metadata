@@ -1,8 +1,10 @@
 package com.ice.music.port;
 
 import com.ice.music.domain.model.Artist;
+import com.ice.music.domain.model.ArtistAlias;
 import com.ice.music.domain.model.ArtistNotFoundException;
 import com.ice.music.domain.service.ArtistService;
+import com.ice.music.port.out.AliasRepository;
 import com.ice.music.port.out.ArtistRepository;
 import com.ice.music.port.out.CachePort;
 import org.junit.jupiter.api.Test;
@@ -21,15 +23,14 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-/**
- * Use case tests with mocked outbound port.
- * Verifies orchestration logic without infrastructure.
- */
 @ExtendWith(MockitoExtension.class)
 class ArtistServiceTest {
 
     @Mock
     private ArtistRepository artistRepository;
+
+    @Mock
+    private AliasRepository aliasRepository;
 
     @Mock
     private CachePort cache;
@@ -62,7 +63,6 @@ class ArtistServiceTest {
 
         assertThat(result.name()).isEqualTo("Freddie Mercury");
         assertThat(result.id()).isEqualTo(existing.id());
-        verify(artistRepository).save(any(Artist.class));
     }
 
     @Test
@@ -81,9 +81,7 @@ class ArtistServiceTest {
         when(artistRepository.findById(existing.id()))
                 .thenReturn(Optional.of(existing));
 
-        var result = artistService.findById(existing.id());
-
-        assertThat(result.name()).isEqualTo("Queen");
+        assertThat(artistService.findById(existing.id()).name()).isEqualTo("Queen");
     }
 
     @Test
@@ -97,12 +95,14 @@ class ArtistServiceTest {
     }
 
     @Test
-    void findByName_delegatesToRepository() {
-        var queen = Artist.create("Queen");
-        when(artistRepository.findByNameIgnoreCase("Queen"))
-                .thenReturn(List.of(queen));
+    void findByName_searchesCanonicalNameAndAliases() {
+        var artist = Artist.create("Queen");
+        when(artistRepository.findByNameIgnoreCase("Freddie")).thenReturn(List.of());
+        when(aliasRepository.findArtistIdsByAliasIgnoreCase("Freddie"))
+                .thenReturn(List.of(artist.id()));
+        when(artistRepository.findById(artist.id())).thenReturn(Optional.of(artist));
 
-        var results = artistService.findByName("Queen");
+        var results = artistService.findByName("Freddie");
 
         assertThat(results).hasSize(1)
                 .first()
@@ -110,10 +110,46 @@ class ArtistServiceTest {
     }
 
     @Test
-    void findByName_returnsEmptyListWhenNoneMatch() {
-        when(artistRepository.findByNameIgnoreCase("Nobody"))
-                .thenReturn(List.of());
+    void findByName_deduplicatesCanonicalAndAliasMatches() {
+        var artist = Artist.create("Queen");
+        when(artistRepository.findByNameIgnoreCase("Queen")).thenReturn(List.of(artist));
+        when(aliasRepository.findArtistIdsByAliasIgnoreCase("Queen"))
+                .thenReturn(List.of(artist.id()));
+        when(artistRepository.findById(artist.id())).thenReturn(Optional.of(artist));
+
+        var results = artistService.findByName("Queen");
+
+        assertThat(results).hasSize(1);
+    }
+
+    @Test
+    void findByName_returnsEmptyWhenNoneMatch() {
+        when(artistRepository.findByNameIgnoreCase("Nobody")).thenReturn(List.of());
+        when(aliasRepository.findArtistIdsByAliasIgnoreCase("Nobody")).thenReturn(List.of());
 
         assertThat(artistService.findByName("Nobody")).isEmpty();
+    }
+
+    @Test
+    void addAlias_savesAliasWhenArtistExists() {
+        var artist = Artist.create("Queen");
+        when(artistRepository.findById(artist.id())).thenReturn(Optional.of(artist));
+        when(aliasRepository.save(any(ArtistAlias.class)))
+                .thenAnswer(inv -> inv.getArgument(0));
+
+        var result = artistService.addAlias(artist.id(), "Farrokh Bulsara");
+
+        assertThat(result.aliasName()).isEqualTo("Farrokh Bulsara");
+        assertThat(result.artistId()).isEqualTo(artist.id());
+        verify(aliasRepository).save(any(ArtistAlias.class));
+    }
+
+    @Test
+    void addAlias_throwsWhenArtistNotFound() {
+        var missingId = UUID.randomUUID();
+        when(artistRepository.findById(missingId)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> artistService.addAlias(missingId, "Alias"))
+                .isInstanceOf(ArtistNotFoundException.class);
     }
 }

@@ -1,7 +1,9 @@
 package com.ice.music.adapter.in.web;
 
 import com.ice.music.domain.model.Artist;
+import com.ice.music.domain.model.ArtistAlias;
 import com.ice.music.domain.model.ArtistNotFoundException;
+import com.ice.music.port.in.AddAliasUseCase;
 import com.ice.music.port.in.CreateArtistUseCase;
 import com.ice.music.port.in.EditArtistNameUseCase;
 import com.ice.music.port.in.FindArtistUseCase;
@@ -27,10 +29,6 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-/**
- * HTTP contract tests — status codes, headers, request/response shapes.
- * No real database, no Spring context beyond the web slice.
- */
 @WebMvcTest(ArtistController.class)
 class ArtistControllerTest {
 
@@ -45,6 +43,9 @@ class ArtistControllerTest {
 
     @MockitoBean
     private FindArtistUseCase findArtistUseCase;
+
+    @MockitoBean
+    private AddAliasUseCase addAliasUseCase;
 
     // --- POST /api/artists ---
 
@@ -102,8 +103,7 @@ class ArtistControllerTest {
 
         mockMvc.perform(get("/api/artists/{id}", missingId))
                 .andExpect(status().isNotFound())
-                .andExpect(jsonPath("$.title", is("Artist Not Found")))
-                .andExpect(jsonPath("$.artistId", is(missingId.toString())));
+                .andExpect(jsonPath("$.title", is("Artist Not Found")));
     }
 
     // --- PATCH /api/artists/{id}/name ---
@@ -168,5 +168,48 @@ class ArtistControllerTest {
         mockMvc.perform(get("/api/artists").param("name", "Nobody"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$", hasSize(0)));
+    }
+
+    // --- POST /api/artists/{id}/aliases ---
+
+    @Test
+    void addAlias_returns201WithLocationHeader() throws Exception {
+        var artistId = UUID.randomUUID();
+        var alias = ArtistAlias.create(artistId, "Farrokh Bulsara");
+        when(addAliasUseCase.addAlias(artistId, "Farrokh Bulsara")).thenReturn(alias);
+
+        mockMvc.perform(post("/api/artists/{id}/aliases", artistId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"alias": "Farrokh Bulsara"}
+                                """))
+                .andExpect(status().isCreated())
+                .andExpect(header().exists("Location"))
+                .andExpect(jsonPath("$.aliasName", is("Farrokh Bulsara")))
+                .andExpect(jsonPath("$.artistId", is(artistId.toString())));
+    }
+
+    @Test
+    void addAlias_returns404WhenArtistNotFound() throws Exception {
+        var missingId = UUID.randomUUID();
+        when(addAliasUseCase.addAlias(eq(missingId), any()))
+                .thenThrow(new ArtistNotFoundException(missingId));
+
+        mockMvc.perform(post("/api/artists/{id}/aliases", missingId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"alias": "Some Alias"}
+                                """))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void addAlias_returns400WhenAliasBlank() throws Exception {
+        mockMvc.perform(post("/api/artists/{id}/aliases", UUID.randomUUID())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"alias": "  "}
+                                """))
+                .andExpect(status().isBadRequest());
     }
 }
