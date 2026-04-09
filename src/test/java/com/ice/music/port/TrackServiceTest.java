@@ -1,0 +1,94 @@
+package com.ice.music.port;
+
+import com.ice.music.domain.model.Artist;
+import com.ice.music.domain.model.ArtistNotFoundException;
+import com.ice.music.domain.model.Track;
+import com.ice.music.domain.service.TrackService;
+import com.ice.music.port.out.ArtistRepository;
+import com.ice.music.port.out.TrackRepository;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+
+import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+@ExtendWith(MockitoExtension.class)
+class TrackServiceTest {
+
+    @Mock
+    private TrackRepository trackRepository;
+
+    @Mock
+    private ArtistRepository artistRepository;
+
+    @InjectMocks
+    private TrackService trackService;
+
+    @Test
+    void addTrack_savesTrackWhenArtistExists() {
+        var artist = Artist.create("Queen");
+        when(artistRepository.findById(artist.id())).thenReturn(Optional.of(artist));
+        when(trackRepository.save(any(Track.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        var result = trackService.addTrack(artist.id(), "Bohemian Rhapsody", "GBAYE7500101", "Rock", 354);
+
+        assertThat(result.title()).isEqualTo("Bohemian Rhapsody");
+        assertThat(result.isrc()).isEqualTo("GBAYE7500101");
+        assertThat(result.artistId()).isEqualTo(artist.id());
+        verify(trackRepository).save(any(Track.class));
+    }
+
+    @Test
+    void addTrack_throwsWhenArtistNotFound() {
+        var missingId = UUID.randomUUID();
+        when(artistRepository.findById(missingId)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> trackService.addTrack(missingId, "Title", "GBAYE7500101", "Rock", 354))
+                .isInstanceOf(ArtistNotFoundException.class);
+
+        verify(trackRepository, never()).save(any());
+    }
+
+    @Test
+    void fetchTracks_returnsTracksWhenArtistExists() {
+        var artist = Artist.create("Queen");
+        var track = Track.create(artist.id(), "Bohemian Rhapsody", "GBAYE7500101", "Rock", 354);
+        when(artistRepository.findById(artist.id())).thenReturn(Optional.of(artist));
+        when(trackRepository.findByArtistId(artist.id())).thenReturn(List.of(track));
+
+        var results = trackService.fetchTracks(artist.id());
+
+        assertThat(results).hasSize(1)
+                .first()
+                .satisfies(t -> assertThat(t.title()).isEqualTo("Bohemian Rhapsody"));
+    }
+
+    @Test
+    void fetchTracks_throwsWhenArtistNotFound() {
+        var missingId = UUID.randomUUID();
+        when(artistRepository.findById(missingId)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> trackService.fetchTracks(missingId))
+                .isInstanceOf(ArtistNotFoundException.class);
+    }
+
+    @Test
+    void fetchTracks_returnsEmptyListWhenNoTracks() {
+        var artist = Artist.create("Queen");
+        when(artistRepository.findById(artist.id())).thenReturn(Optional.of(artist));
+        when(trackRepository.findByArtistId(artist.id())).thenReturn(List.of());
+
+        assertThat(trackService.fetchTracks(artist.id())).isEmpty();
+    }
+}
