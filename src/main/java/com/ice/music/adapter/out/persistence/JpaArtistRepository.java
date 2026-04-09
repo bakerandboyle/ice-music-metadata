@@ -6,6 +6,7 @@ import com.ice.music.domain.model.Artist;
 import com.ice.music.port.out.ArtistRepository;
 import org.springframework.stereotype.Repository;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -42,6 +43,13 @@ public class JpaArtistRepository implements ArtistRepository {
     @Override
     public Optional<Artist> findById(UUID id) {
         return springDataRepo.findById(id).map(mapper::toDomain);
+    }
+
+    @Override
+    public List<Artist> findByNameIgnoreCase(String name) {
+        return springDataRepo.findByNameIgnoreCase(name).stream()
+                .map(mapper::toDomain)
+                .toList();
     }
 
     @Override
