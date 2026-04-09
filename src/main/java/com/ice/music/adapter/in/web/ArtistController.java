@@ -1,8 +1,11 @@
 package com.ice.music.adapter.in.web;
 
+import com.ice.music.adapter.in.web.dto.AddAliasRequest;
+import com.ice.music.adapter.in.web.dto.AliasResponse;
 import com.ice.music.adapter.in.web.dto.ArtistResponse;
 import com.ice.music.adapter.in.web.dto.CreateArtistRequest;
 import com.ice.music.adapter.in.web.dto.EditArtistNameRequest;
+import com.ice.music.port.in.AddAliasUseCase;
 import com.ice.music.port.in.CreateArtistUseCase;
 import com.ice.music.port.in.EditArtistNameUseCase;
 import com.ice.music.port.in.FindArtistUseCase;
@@ -23,9 +26,6 @@ import java.util.UUID;
 
 /**
  * REST adapter for Artist operations.
- *
- * Versioning: X-ICE-Version header (date-based).
- * Current version (2026-04-09) is the default when header is omitted.
  */
 @RestController
 @RequestMapping("/api/artists")
@@ -34,15 +34,18 @@ public class ArtistController {
     private final CreateArtistUseCase createArtistUseCase;
     private final EditArtistNameUseCase editArtistNameUseCase;
     private final FindArtistUseCase findArtistUseCase;
+    private final AddAliasUseCase addAliasUseCase;
 
     public ArtistController(
             CreateArtistUseCase createArtistUseCase,
             EditArtistNameUseCase editArtistNameUseCase,
-            FindArtistUseCase findArtistUseCase
+            FindArtistUseCase findArtistUseCase,
+            AddAliasUseCase addAliasUseCase
     ) {
         this.createArtistUseCase = createArtistUseCase;
         this.editArtistNameUseCase = editArtistNameUseCase;
         this.findArtistUseCase = findArtistUseCase;
+        this.addAliasUseCase = addAliasUseCase;
     }
 
     @PostMapping
@@ -71,5 +74,16 @@ public class ArtistController {
         return findArtistUseCase.findByName(name).stream()
                 .map(ArtistResponse::from)
                 .toList();
+    }
+
+    @PostMapping("/{id}/aliases")
+    public ResponseEntity<AliasResponse> addAlias(
+            @PathVariable UUID id,
+            @Valid @RequestBody AddAliasRequest request
+    ) {
+        var response = AliasResponse.from(addAliasUseCase.addAlias(id, request.alias()));
+        return ResponseEntity
+                .created(URI.create("/api/artists/" + id + "/aliases/" + response.id()))
+                .body(response);
     }
 }
