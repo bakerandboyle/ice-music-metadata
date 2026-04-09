@@ -1,0 +1,13 @@
+# Production JVM flags for ICE Music Metadata Service
+# Java 25 LTS on Spring Boot 4.0.4
+#
+# ZGC: sub-1ms p99 GC pauses — the "Latency Floor"
+-XX:+UseZGC
+-XX:+ZGenerational
+
+# Memory (tune per deployment)
+-Xms512m
+-Xmx2g
+
+# Virtual thread diagnostics
+-Djdk.tracePinnedThreads=short
