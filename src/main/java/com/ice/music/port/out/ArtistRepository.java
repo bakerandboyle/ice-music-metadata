@@ -2,6 +2,7 @@ package com.ice.music.port.out;
 
 import com.ice.music.domain.model.Artist;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -16,6 +17,8 @@ public interface ArtistRepository {
     Artist save(Artist artist);
 
     Optional<Artist> findById(UUID id);
+
+    List<Artist> findByNameIgnoreCase(String name);
 
     long count();
 }
