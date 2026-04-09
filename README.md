@@ -265,16 +265,28 @@ If the catalogue reaches hundreds of millions of records, even a covering-index 
 
 A nightly job (out of scope for POC) re-indexes the `rank` column. The AOD query becomes a primary key lookup: `SELECT artist_id FROM artist_rank WHERE rank = :targetIndex`. Complexity drops from O(N) to O(1).
 
-**Single-Flight Cache with Redis SETNX:**
+**Artist Count — Redis Counter, Not `COUNT(*)`:**
+
+`COUNT(*)` performs a table scan — unacceptable at streaming platform scale. Instead, the artist count is maintained as an atomic Redis counter:
+
+```
+Artist created → INCR artist:count     (O(1), atomic)
+AOD compute   → GET artist:count       (O(1), no DB)
+Cold start    → seed from DB COUNT(*)  (one-time only)
+```
+
+The counter is incremented on every artist create. The AOD engine reads from Redis, never from the database. On a Redis cold start (e.g. after a flush or failover), the count is seeded once from `repository.count()` and cached with no TTL — this is the only time the table scan runs.
+
+**Single-Flight Cache with Redis SETNX + Pub/Sub:**
 
 ```
 1. GET cache:aod → HIT? Return immediately.
-2. SET lock:aod true NX EX 30 → Won the lock?
-   YES → Run OFFSET query → SET cache:aod {artist_id} EX {ttl_to_midnight} → Return.
-   NO  → Sleep 100ms → Retry GET cache:aod.
+2. SETNX lock:aod → Won the lock?
+   YES → Compute AOD → SET cache:aod → PUBLISH aod:notifications "ready" → DELETE lock.
+   NO  → SUBSCRIBE aod:notifications → CompletableFuture.get(2s) → GET cache:aod.
 ```
 
-Only one node across the entire cluster computes the AOD per day. All others serve from Redis at O(1). The 30-second lock TTL is a safety valve — if the winner crashes, the lock expires and another node takes over.
+No polling, no `Thread.sleep`. Lock losers subscribe to a Redis pub/sub channel and complete as soon as the winner publishes. The 2-second timeout is a safety valve — on expiry, the node falls back to direct computation. The lock is explicitly deleted in a `finally` block; the 30-second TTL is a secondary safety valve if the winner crashes.
 
 **Temporal Locality — The "Fragmentation of Truth" Problem:**
 
@@ -321,7 +333,16 @@ This is documented, not built. The UTC anchor is the correct default for a strea
 
 Redis serves as the distributed cache layer behind a `CachePort` interface. There is no in-memory fallback — the POC runs the same infrastructure as production.
 
-**Why not Caffeine as a "dev mode" shortcut?** A senior choice would be to show the hexagonal port with two adapters. A staff choice is to ship the correct one. An in-process cache cannot provide the stampede protection (`SETNX`), idempotency key sharing, or AOD consistency that a multi-node deployment requires. Docker Compose makes Redis a single-command dependency — there is no friction to justify an inferior substitute.
+**Redis serves four distinct roles:**
+
+| Role | Mechanism | Key Pattern |
+|------|-----------|-------------|
+| **AOD result cache** | `GET`/`SET` with TTL to midnight UTC | `aod:artist` |
+| **AOD single-flight** | `SETNX` lock + pub/sub signal | `aod:lock`, `aod:notifications` |
+| **Artist count** | Atomic `INCR` on create, `GET` on read (no TTL) | `artist:count` |
+| **Idempotency keys** | `SETNX` with short TTL | `idempotency:{key}` |
+
+**Why not Caffeine as a "dev mode" shortcut?** A senior choice would be to show the hexagonal port with two adapters. A staff choice is to ship the correct one. An in-process cache cannot provide the distributed locking (`SETNX`), pub/sub coordination, atomic counters, or cross-node consistency that a horizontally scaled service requires. Docker Compose makes Redis a single-command dependency — there is no friction to justify an inferior substitute.
 
 The `CachePort` interface remains. If a future adapter is needed (Memcached, Hazelcast), it plugs in without domain changes. The hexagonal benefit is proven by the `AuditPublisher` port, not by shipping a toy cache.
 
@@ -553,6 +574,8 @@ Testcontainers lifecycle is managed by Spring Boot's `@ServiceConnection` — co
 | Search | Postgres B-Tree / GIN indexes                         | OpenSearch / Elasticsearch | Operational simplicity for POC; CQRS makes search migration a plug-in task |
 | AOD algorithm | Rank-Pointer (`epochDay % n` + covering index OFFSET) | Random / stateful pointer / naive UUID scan | Guarantees fair rotation; covering index avoids table scan; materialised rank table documented as O(1) scaling path |
 | AOD temporal anchor | Global UTC midnight | Timezone-localised transitions | Social consistency + single cache key; zoned transitions supported via offset-partitioned Redis Hash projection if business requires it |
+| AOD artist count | Redis `INCR` counter (DB seed on cold start) | `COUNT(*)` table scan | O(1) reads on hot path; table scan runs once per Redis cold start, never during request handling |
+| AOD coordination | Redis pub/sub signal (`SETNX` + `SUBSCRIBE`) | `Thread.sleep` polling loop | Event-driven: waiters complete immediately on signal; no wasted CPU cycles or latency from arbitrary sleep intervals |
 | Cache | Redis (distributed) | Caffeine (in-process) | Ship the production infrastructure; Docker Compose eliminates the friction argument for in-memory substitutes |
 | Auditing | Async event emission (SNS/SQS) | Synchronous audit table writes | Preserves latency floor; decouples compliance writes from critical path |
 | API versioning | Header-based date scheme (`X-ICE-Version`) | URL path versioning (`/v1/`) | Resource URIs stay clean; avoids route duplication and client-library friction |
