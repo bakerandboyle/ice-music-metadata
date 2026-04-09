@@ -6,6 +6,7 @@ import com.ice.music.port.in.CreateArtistUseCase;
 import com.ice.music.port.in.EditArtistNameUseCase;
 import com.ice.music.port.in.FindArtistUseCase;
 import com.ice.music.port.out.ArtistRepository;
+import com.ice.music.port.out.CachePort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -15,21 +16,28 @@ import java.util.UUID;
 /**
  * Domain service implementing Artist use cases.
  *
- * Orchestrates domain logic and delegates persistence to the outbound port.
+ * Maintains a Redis counter (artist:count) on create to avoid
+ * COUNT(*) table scans in the AOD engine.
  */
 @Service
 @Transactional
 public class ArtistService implements CreateArtistUseCase, EditArtistNameUseCase, FindArtistUseCase {
 
-    private final ArtistRepository artistRepository;
+    static final String ARTIST_COUNT_KEY = "artist:count";
 
-    public ArtistService(ArtistRepository artistRepository) {
+    private final ArtistRepository artistRepository;
+    private final CachePort cache;
+
+    public ArtistService(ArtistRepository artistRepository, CachePort cache) {
         this.artistRepository = artistRepository;
+        this.cache = cache;
     }
 
     @Override
     public Artist create(String name) {
-        return artistRepository.save(Artist.create(name));
+        var artist = artistRepository.save(Artist.create(name));
+        cache.increment(ARTIST_COUNT_KEY);
+        return artist;
     }
 
     @Override

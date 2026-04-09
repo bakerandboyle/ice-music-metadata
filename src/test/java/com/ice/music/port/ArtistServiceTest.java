@@ -4,6 +4,7 @@ import com.ice.music.domain.model.Artist;
 import com.ice.music.domain.model.ArtistNotFoundException;
 import com.ice.music.domain.service.ArtistService;
 import com.ice.music.port.out.ArtistRepository;
+import com.ice.music.port.out.CachePort;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -30,6 +31,9 @@ class ArtistServiceTest {
     @Mock
     private ArtistRepository artistRepository;
 
+    @Mock
+    private CachePort cache;
+
     @InjectMocks
     private ArtistService artistService;
 
@@ -43,6 +47,7 @@ class ArtistServiceTest {
         assertThat(result.name()).isEqualTo("Queen");
         assertThat(result.id()).isNotNull();
         verify(artistRepository).save(any(Artist.class));
+        verify(cache).increment("artist:count");
     }
 
     @Test
