@@ -52,4 +52,12 @@ public class GlobalExceptionHandler {
         problem.setType(URI.create("https://ice.com/problems/idempotency-conflict"));
         return problem;
     }
+    @ExceptionHandler(FilterChainException.class)
+    public ProblemDetail handleFilterChainError(FilterChainException ex) {
+        var problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.INTERNAL_SERVER_ERROR, "An unexpected error occurred");
+        problem.setTitle("Internal Server Error");
+        problem.setType(URI.create("https://ice.com/problems/internal-error"));
+        return problem;
+    }
 }
