@@ -1,10 +1,13 @@
 package com.ice.music.domain.service;
 
 import com.ice.music.domain.model.ArtistNotFoundException;
+import com.ice.music.domain.model.AuditEvent;
 import com.ice.music.domain.model.Track;
 import com.ice.music.port.in.AddTrackUseCase;
 import com.ice.music.port.in.FetchArtistTracksUseCase;
+import com.ice.music.port.out.ActorContext;
 import com.ice.music.port.out.ArtistRepository;
+import com.ice.music.port.out.AuditPublisher;
 import com.ice.music.port.out.TrackRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -12,22 +15,21 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.List;
 import java.util.UUID;
 
-/**
- * Domain service implementing Track use cases.
- *
- * Validates artist existence before accepting a track —
- * a track cannot belong to a non-existent artist.
- */
 @Service
 @Transactional
 public class TrackService implements AddTrackUseCase, FetchArtistTracksUseCase {
 
     private final TrackRepository trackRepository;
     private final ArtistRepository artistRepository;
+    private final AuditPublisher auditPublisher;
+    private final ActorContext actorContext;
 
-    public TrackService(TrackRepository trackRepository, ArtistRepository artistRepository) {
+    public TrackService(TrackRepository trackRepository, ArtistRepository artistRepository,
+                        AuditPublisher auditPublisher, ActorContext actorContext) {
         this.trackRepository = trackRepository;
         this.artistRepository = artistRepository;
+        this.auditPublisher = auditPublisher;
+        this.actorContext = actorContext;
     }
 
     @Override
@@ -36,7 +38,10 @@ public class TrackService implements AddTrackUseCase, FetchArtistTracksUseCase {
                 .orElseThrow(() -> new ArtistNotFoundException(artistId));
 
         var track = Track.create(artistId, title, isrc, genre, durationSeconds);
-        return trackRepository.save(track);
+        var saved = trackRepository.save(track);
+
+        auditPublisher.publish(AuditEvent.trackAdded(saved, actorContext.currentActorId()));
+        return saved;
     }
 
     @Override

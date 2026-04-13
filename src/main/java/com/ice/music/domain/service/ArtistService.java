@@ -3,12 +3,15 @@ package com.ice.music.domain.service;
 import com.ice.music.domain.model.Artist;
 import com.ice.music.domain.model.ArtistAlias;
 import com.ice.music.domain.model.ArtistNotFoundException;
+import com.ice.music.domain.model.AuditEvent;
 import com.ice.music.port.in.AddAliasUseCase;
 import com.ice.music.port.in.CreateArtistUseCase;
 import com.ice.music.port.in.EditArtistNameUseCase;
 import com.ice.music.port.in.FindArtistUseCase;
+import com.ice.music.port.out.ActorContext;
 import com.ice.music.port.out.AliasRepository;
 import com.ice.music.port.out.ArtistRepository;
+import com.ice.music.port.out.AuditPublisher;
 import com.ice.music.port.out.CachePort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -17,12 +20,6 @@ import java.util.List;
 import java.util.UUID;
 import java.util.stream.Stream;
 
-/**
- * Domain service implementing Artist use cases including alias management.
- *
- * findByName searches both canonical names and aliases, returning
- * a deduplicated list of matching artists.
- */
 @Service
 @Transactional
 public class ArtistService implements CreateArtistUseCase, EditArtistNameUseCase, FindArtistUseCase, AddAliasUseCase {
@@ -32,26 +29,36 @@ public class ArtistService implements CreateArtistUseCase, EditArtistNameUseCase
     private final ArtistRepository artistRepository;
     private final AliasRepository aliasRepository;
     private final CachePort cache;
+    private final AuditPublisher auditPublisher;
+    private final ActorContext actorContext;
 
-    public ArtistService(ArtistRepository artistRepository, AliasRepository aliasRepository, CachePort cache) {
+    public ArtistService(ArtistRepository artistRepository, AliasRepository aliasRepository,
+                         CachePort cache, AuditPublisher auditPublisher, ActorContext actorContext) {
         this.artistRepository = artistRepository;
         this.aliasRepository = aliasRepository;
         this.cache = cache;
+        this.auditPublisher = auditPublisher;
+        this.actorContext = actorContext;
     }
 
     @Override
     public Artist create(String name) {
         var artist = artistRepository.save(Artist.create(name));
         cache.increment(ARTIST_COUNT_KEY);
+        auditPublisher.publish(AuditEvent.artistCreated(artist, actorContext.currentActorId()));
         return artist;
     }
 
     @Override
     public Artist editName(UUID artistId, String newName) {
-        return artistRepository.findById(artistId)
-                .map(artist -> artist.withName(newName))
-                .map(artistRepository::save)
+        var before = artistRepository.findById(artistId)
                 .orElseThrow(() -> new ArtistNotFoundException(artistId));
+
+        var after = artistRepository.save(before.withName(newName));
+
+        auditPublisher.publish(AuditEvent.artistNameUpdated(
+                artistId, before.name(), after.name(), actorContext.currentActorId()));
+        return after;
     }
 
     @Override
@@ -80,6 +87,9 @@ public class ArtistService implements CreateArtistUseCase, EditArtistNameUseCase
         artistRepository.findById(artistId)
                 .orElseThrow(() -> new ArtistNotFoundException(artistId));
 
-        return aliasRepository.save(ArtistAlias.create(artistId, aliasName));
+        var alias = aliasRepository.save(ArtistAlias.create(artistId, aliasName));
+        auditPublisher.publish(AuditEvent.artistAliasAdded(
+                artistId, alias, actorContext.currentActorId()));
+        return alias;
     }
 }
