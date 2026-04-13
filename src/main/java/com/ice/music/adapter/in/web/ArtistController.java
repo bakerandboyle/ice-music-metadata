@@ -9,7 +9,14 @@ import com.ice.music.port.in.AddAliasUseCase;
 import com.ice.music.port.in.CreateArtistUseCase;
 import com.ice.music.port.in.EditArtistNameUseCase;
 import com.ice.music.port.in.FindArtistUseCase;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.Schema;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import org.springframework.http.MediaType;
+import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -28,7 +35,8 @@ import java.util.UUID;
  * REST adapter for Artist operations.
  */
 @RestController
-@RequestMapping("/api/artists")
+@RequestMapping(path = "/api/artists", produces = MediaType.APPLICATION_JSON_VALUE)
+@Tag(name = "Artists", description = "Artist lifecycle — create, rename, search, and alias management")
 public class ArtistController {
 
     private final CreateArtistUseCase createArtistUseCase;
@@ -50,6 +58,14 @@ public class ArtistController {
 
     @PostMapping
     @Idempotent(namespace = "artist:create")
+    @Operation(summary = "Create a new artist",
+            description = "Creates an artist with the given name. Supports X-Idempotency-Key for safe retries.")
+    @ApiResponse(responseCode = "201", description = "Artist created",
+            content = @Content(schema = @Schema(implementation = ArtistResponse.class)))
+    @ApiResponse(responseCode = "400", description = "Validation failure (blank name, exceeds 500 chars)",
+            content = @Content(schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "409", description = "Idempotency conflict — duplicate request in flight",
+            content = @Content(schema = @Schema(implementation = ProblemDetail.class)))
     public ResponseEntity<ArtistResponse> createArtist(@Valid @RequestBody CreateArtistRequest request) {
         var response = ArtistResponse.from(createArtistUseCase.create(request.name()));
         return ResponseEntity
@@ -58,11 +74,26 @@ public class ArtistController {
     }
 
     @GetMapping("/{id}")
+    @Operation(summary = "Get an artist by ID")
+    @ApiResponse(responseCode = "200", description = "Artist found",
+            content = @Content(schema = @Schema(implementation = ArtistResponse.class)))
+    @ApiResponse(responseCode = "404", description = "Artist not found",
+            content = @Content(schema = @Schema(implementation = ProblemDetail.class)))
     public ArtistResponse getArtist(@PathVariable UUID id) {
         return ArtistResponse.from(findArtistUseCase.findById(id));
     }
 
     @PatchMapping("/{id}/name")
+    @Operation(summary = "Rename an artist",
+            description = "Partial update — changes the artist's canonical name. Emits an ARTIST_NAME_CHANGED audit event.")
+    @ApiResponse(responseCode = "200", description = "Name updated",
+            content = @Content(schema = @Schema(implementation = ArtistResponse.class)))
+    @ApiResponse(responseCode = "404", description = "Artist not found",
+            content = @Content(schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "400", description = "Validation failure",
+            content = @Content(schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "409", description = "Concurrent modification conflict (optimistic lock)",
+            content = @Content(schema = @Schema(implementation = ProblemDetail.class)))
     public ArtistResponse editArtistName(
             @PathVariable UUID id,
             @Valid @RequestBody EditArtistNameRequest request
@@ -71,6 +102,9 @@ public class ArtistController {
     }
 
     @GetMapping(params = "name")
+    @Operation(summary = "Search artists by name",
+            description = "Searches canonical names and aliases. Returns all matching artists (deduplicated).")
+    @ApiResponse(responseCode = "200", description = "Search results (may be empty)")
     public List<ArtistResponse> findByName(@RequestParam String name) {
         return findArtistUseCase.findByName(name).stream()
                 .map(ArtistResponse::from)
@@ -79,6 +113,17 @@ public class ArtistController {
 
     @PostMapping("/{id}/aliases")
     @Idempotent(namespace = "artist:alias")
+    @Operation(summary = "Add an alias for an artist",
+            description = "Registers an alternative name (e.g. 'Ziggy Stardust' for David Bowie). "
+                    + "Aliases are included in name searches. Supports X-Idempotency-Key.")
+    @ApiResponse(responseCode = "201", description = "Alias created",
+            content = @Content(schema = @Schema(implementation = AliasResponse.class)))
+    @ApiResponse(responseCode = "404", description = "Artist not found",
+            content = @Content(schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "400", description = "Validation failure",
+            content = @Content(schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "409", description = "Idempotency conflict",
+            content = @Content(schema = @Schema(implementation = ProblemDetail.class)))
     public ResponseEntity<AliasResponse> addAlias(
             @PathVariable UUID id,
             @Valid @RequestBody AddAliasRequest request

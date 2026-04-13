@@ -63,6 +63,16 @@ logging:
     format:
       console: ecs
 
+# OpenAPI
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+    operations-sorter: method
+    tags-sorter: alpha
+  api-docs:
+    path: /v3/api-docs
+  show-actuator: false
+
 # Server
 server:
   shutdown: graceful

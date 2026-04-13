@@ -1,5 +1,6 @@
 package com.ice.music.adapter.in.web.dto;
 
+import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Positive;
 import jakarta.validation.constraints.Size;
@@ -16,6 +17,7 @@ public record CreateTrackRequest(
         String genre,
 
         @Positive(message = "Duration must be positive")
+        @Schema(minimum = "1")
         int durationSeconds
 ) {
 }
