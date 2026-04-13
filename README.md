@@ -15,23 +15,64 @@ A production-ready music metadata service built to SOLID principles with a hexag
 - [Design Decisions](#design-decisions)
 - [Data Model](#data-model)
 - [Running the Tests](#running-the-tests)
+- [Docker](#docker)
 - [Production Deployment Notes](#production-deployment-notes)
 
 ---
 
 ## Quick Start
 
-**Prerequisites:** Java 25, Docker & Docker Compose (for PostgreSQL and Redis)
+**Prerequisites:** Java 25, Docker & Docker Compose (for PostgreSQL and Redis), `jq` (for test scripts)
+
+### 1. Clone and configure
 
 ```bash
 git clone <repo-url>
 cd ice-music-metadata
 cp .env.example .env          # Create local secrets (gitignored)
+```
+
+### 2. Start infrastructure
+
+```bash
 docker compose up -d
+```
+
+Docker Compose provisions PostgreSQL and Redis — this is the real stack, not an in-memory substitute.
+
+### 3. Run the service
+
+```bash
+set -a && source .env && set +a    # Export .env variables to shell
 ./mvnw spring-boot:run
 ```
 
-The service starts on `http://localhost:8080`. Docker Compose provisions PostgreSQL and Redis — this is the real stack, not an in-memory substitute. Credentials live in `.env` (never committed), not in application config.
+The service starts on `http://localhost:8080`. The `source .env` step exports database credentials — Spring Boot's property resolver picks them up via `${DB_USERNAME}` placeholders in `application.yml`.
+
+### 4. Load sample data
+
+```bash
+chmod +x load-test-data.sh
+./load-test-data.sh
+```
+
+Seeds 5 artists (Queen, Radiohead, David Bowie, Björk, Miles Davis), 7 aliases (Ziggy Stardust, The Thin White Duke, etc.), and 25 tracks with unique ISRCs.
+
+### 5. Run API tests
+
+```bash
+chmod +x test-api.sh
+./test-api.sh
+```
+
+Exercises every endpoint — happy paths, 400/404/409 error cases, idempotency replay, alias resolution, AOD determinism, and actuator health. Re-runnable with unique data per execution (timestamp-based suffixes).
+
+### 6. Browse the API spec
+
+- **Swagger UI:** [http://localhost:8080/swagger-ui.html](http://localhost:8080/swagger-ui.html)
+- **OpenAPI 3.1 JSON:** [http://localhost:8080/v3/api-docs](http://localhost:8080/v3/api-docs)
+
+Auto-generated from controller annotations. Custom platform headers (`X-ICE-Version`, `X-Actor-Id`, `X-Idempotency-Key`) are documented on every relevant operation.
 
 ---
 
@@ -121,7 +162,7 @@ Clients opt in to a specific contract date. New versions are introduced only on 
 }
 ```
 
-**Response (200 OK):** Returns the updated artist resource. Uses optimistic locking - returns `409 Conflict` if a concurrent modification is detected.
+**Response (200 OK):** Returns the updated artist resource. Uses optimistic locking — returns `409 Conflict` if a concurrent modification is detected.
 
 #### POST `/api/artists/{id}/aliases`
 
@@ -272,7 +313,7 @@ A nightly job (out of scope for POC) re-indexes the `rank` column. The AOD query
 ```
 Artist created → INCR artist:count     (O(1), atomic)
 AOD compute   → GET artist:count       (O(1), no DB)
-Cold start    → seed from DB COUNT(*)  (one-time only)
+Cold start    → seed from DB COUNT(*)  (one-time only, no TTL)
 ```
 
 The counter is incremented on every artist create. The AOD engine reads from Redis, never from the database. On a Redis cold start (e.g. after a flush or failover), the count is seeded once from `repository.count()` and cached with no TTL — this is the only time the table scan runs.
@@ -490,6 +531,16 @@ No secret is committed to source control. Ever.
 
 **Why not Spring profiles for environment separation?** Profiles (`application-dev.yml`, `application-prod.yml`) embed environment assumptions into the codebase. A 12-Factor application treats config as environment — the same artifact runs in every environment, differentiated only by injected variables. This also eliminates the risk of a `prod` profile being accidentally committed with real credentials.
 
+### 11. API Documentation — OpenAPI 3.1 via Springdoc
+
+The API spec is generated from code, not maintained as a separate artefact. Springdoc scans `@RestController` classes, picks up `@Operation` and `@ApiResponse` annotations, and produces an OpenAPI 3.1 spec at `/v3/api-docs` with an interactive Swagger UI at `/swagger-ui.html`.
+
+**Custom Platform Headers:** An `OperationCustomizer` bean injects `X-ICE-Version` and `X-Actor-Id` into every operation, and detects `@Idempotent`-annotated methods to inject `X-Idempotency-Key` automatically. This means the header contract is documented without repeating `@Parameter` annotations on every method.
+
+**Why not SpringFox?** SpringFox has had no updates since 2020 and is incompatible with Spring Boot 3+. Springdoc is the only maintained option for modern Spring Boot, supporting Jackson 3, OpenAPI 3.1, and Spring Boot 4.x.
+
+**Why not a hand-maintained spec?** A static OpenAPI YAML diverges from code the moment you merge a change. Code-first generation means the spec is always correct by construction. The annotations are the single source of truth.
+
 ---
 
 ## Data Model
@@ -513,11 +564,24 @@ Schema evolution is managed by Flyway. Migration scripts live in `src/main/resou
 
 ## Running the Tests
 
+### Unit & Integration Tests (Maven)
+
 **Prerequisites:** Docker must be running (Testcontainers spins up real Postgres and Redis containers).
 
 ```bash
 ./mvnw test
 ```
+
+### API Smoke Tests (curl)
+
+With the service running:
+
+```bash
+./test-api.sh                          # Default: http://localhost:8080
+./test-api.sh http://localhost:9090    # Custom base URL
+```
+
+Colour-coded output with pass/fail counts. Exit code equals failure count — usable in CI. Re-runnable with unique data per execution (timestamp suffix on all created entities).
 
 ### Test Philosophy — No Mocks for Infrastructure
 
@@ -538,22 +602,76 @@ Testcontainers lifecycle is managed by Spring Boot's `@ServiceConnection` — co
 
 ---
 
+## Docker
+
+### Build the image
+
+```bash
+docker build -t ice-music-metadata .
+```
+
+Multi-stage build: Maven + JDK Alpine compiles the fat JAR, then copies it to a minimal JRE Alpine runtime image (~150MB). Test sources are not compiled in the Docker build — tests run in CI via Testcontainers.
+
+### Run as a container
+
+With Docker Compose infrastructure already running (`docker compose up -d`):
+
+```bash
+docker run --rm --network host \
+  -e DB_HOST=localhost -e DB_PORT=5432 -e DB_NAME=ice_music \
+  -e DB_USERNAME=ice -e DB_PASSWORD=ice_dev \
+  -e REDIS_HOST=localhost -e REDIS_PORT=6379 \
+  ice-music-metadata
+```
+
+Or source from `.env`:
+
+```bash
+docker run --rm --network host --env-file .env ice-music-metadata
+```
+
+### Image details
+
+| Layer | Base | Purpose |
+|-------|------|---------|
+| Build stage | `eclipse-temurin:25-jdk-alpine` | Maven build with dependency layer caching |
+| Runtime stage | `eclipse-temurin:25-jre-alpine` | Minimal attack surface, JRE only |
+
+**Security:** Runs as non-root `ice` user. No shell, no build tools in the runtime image.
+
+**JVM flags (baked in, overridable via `JAVA_OPTS`):**
+
+```
+-XX:+UseZGC -XX:+ZGenerational -Djdk.tracePinnedThreads=short
+```
+
+ZGC for sub-1ms p99 GC pauses. Virtual thread pinning diagnostics enabled for production monitoring.
+
+---
+
 ## Production Deployment Notes
 
 ### What this POC demonstrates
 
-- Hexagonal architecture with clean domain isolation
-- Virtual thread readiness (Java 25 LTS, pinning-safe)
-- Redis-backed distributed caching with stampede protection
-- Asynchronous audit event emission via `AuditPublisher` port
+- Hexagonal architecture with clean domain isolation (The Sanctuary Rule)
+- Java 25 LTS with virtual threads (pinning-safe with Hibernate)
+- Redis-backed distributed caching with pub/sub single-flight stampede protection
+- Typed audit event emission via `AuditPublisher` port with `EventType` enum schema governance
+- Actor identity via Java 25 `ScopedValue` — virtual-thread-safe, zero proxy overhead
+- `@Idempotent` AOP aspect with Redis-backed intent deduplication (three-tier model)
 - Header-based API versioning (date scheme, no URL pollution)
+- ISRC (ISO 3901) as natural key — industry-standard recording identification
 - CQRS wiring ready for read replica separation
-- Idempotent writes, optimistic locking, deterministic AOD rotation
-- Full observability stack
+- Optimistic locking with `@Version` for lost-update prevention
+- Full observability: Actuator health/metrics/info, Prometheus, structured JSON logging (ECS)
+- Containerised: multi-stage Docker build, Temurin 25 JRE Alpine, non-root, ZGC
 - Real infrastructure testing via Testcontainers (Postgres + Redis) — no embedded substitutes
+- CI via GitHub Actions with Testcontainers
+- OpenAPI 3.1 spec + Swagger UI — auto-generated from controller annotations via Springdoc, with custom platform headers
 
 ### What a production deployment would add
 
+- **`SecurityActorContext` adapter** replacing `ScopedActorContext` — reads from `SecurityContextHolder` when OAuth2/API keys are wired in. Same `ActorContext` port, different adapter, domain unchanged.
 - **SNS audit publisher adapter** replacing the logging adapter, wiring to the SNS → SQS → Audit Service pipeline
 - **Audit Service** consuming SQS: cold storage (S3/Glacier) for compliance, warm storage (OpenSearch) for CS queries
 - **Zoned AOD projection** (if business requires localised transitions): hourly background job pre-warming a Redis Hash mapping all 24 offsets to their artist selections
@@ -561,30 +679,35 @@ Testcontainers lifecycle is managed by Spring Boot's `@ServiceConnection` — co
 - **Read replica datasource** configured behind a load balancer, wired to the existing CQRS query path
 - **API authentication** (OAuth2 / API keys) — excluded from the POC to keep the focus on architecture and domain logic
 - **Rate limiting** at the API gateway layer
-- **OpenAPI spec** generated from controller annotations via Springdoc, published to a developer portal
-- **GraalVM native image** build for sub-second cold starts in serverless / Kubernetes environments
+- **Kubernetes deployment** — the Docker image is stateless and ready; add Helm chart, liveness/readiness probes (`/actuator/health`), horizontal pod autoscaler
 
 ---
 
 ## Trade-off Summary
 
-| Decision | I chose                                               | Over | Reasoning |
-|----------|-------------------------------------------------------|------|-----------|
-| Architecture | Hexagonal (Ports & Adapters)                          | Layered / Framework-coupled | Persistence and framework changes don't touch domain logic |
-| Search | Postgres B-Tree / GIN indexes                         | OpenSearch / Elasticsearch | Operational simplicity for POC; CQRS makes search migration a plug-in task |
+| Decision | We chose | Over | Reasoning |
+|----------|----------|------|-----------|
+| Architecture | Hexagonal (Ports & Adapters) | Layered / Framework-coupled | Persistence and framework changes don't touch domain logic |
+| Search | Postgres B-Tree / GIN indexes | OpenSearch / Elasticsearch | Operational simplicity for POC; CQRS makes search migration a plug-in task |
 | AOD algorithm | Rank-Pointer (`epochDay % n` + covering index OFFSET) | Random / stateful pointer / naive UUID scan | Guarantees fair rotation; covering index avoids table scan; materialised rank table documented as O(1) scaling path |
 | AOD temporal anchor | Global UTC midnight | Timezone-localised transitions | Social consistency + single cache key; zoned transitions supported via offset-partitioned Redis Hash projection if business requires it |
 | AOD artist count | Redis `INCR` counter (DB seed on cold start) | `COUNT(*)` table scan | O(1) reads on hot path; table scan runs once per Redis cold start, never during request handling |
 | AOD coordination | Redis pub/sub signal (`SETNX` + `SUBSCRIBE`) | `Thread.sleep` polling loop | Event-driven: waiters complete immediately on signal; no wasted CPU cycles or latency from arbitrary sleep intervals |
 | Cache | Redis (distributed) | Caffeine (in-process) | Ship the production infrastructure; Docker Compose eliminates the friction argument for in-memory substitutes |
-| Auditing | Async event emission (SNS/SQS) | Synchronous audit table writes | Preserves latency floor; decouples compliance writes from critical path |
+| Idempotency | `@Idempotent` AOP aspect with `IdempotencyPort` | Servlet filter on raw bytes | Declarative; operates on method return values not raw response streams; domain stays pure |
+| Audit schema | `EventType` enum + factory methods | Magic string literals | Schema governance: prevents audit drift; downstream consumers rely on a fixed contract |
+| Audit emission | Async event via `AuditPublisher` port | Synchronous audit table / Hibernate Envers | Preserves latency floor; Envers shadow tables redundant when compliance trail is externalised |
+| Audit housekeeping | JPA `@CreatedDate`/`@LastModifiedDate`/`@Version` | Hibernate Envers | Zero-overhead timestamps and optimistic locking; no extra tables or triggers |
+| Actor context | Java 25 `ScopedValue` via filter | `@RequestScope` bean / `ThreadLocal` | Zero proxy overhead; inherently safe on virtual threads; immutable within scope |
 | API versioning | Header-based date scheme (`X-ICE-Version`) | URL path versioning (`/v1/`) | Resource URIs stay clean; avoids route duplication and client-library friction |
+| Track identity | ISRC (ISO 3901) natural key | `(artist_id, title)` composite | Industry standard; handles same-title recordings (studio, live, remaster) |
 | Mapping | Manual Entity ↔ Domain Record | `@Entity` on domain objects | Staff trade-off: more code today, zero framework migration pain tomorrow |
 | Application state | 100% stateless nodes | Session affinity | Infinite horizontal scaling on Kubernetes; all state lives in Postgres + Redis |
 | JDK | Java 25 LTS | Java 24/26 (feature releases) | Enterprise lifecycle stability; first LTS with virtual thread pinning fix |
+| Container | Multi-stage Temurin 25 JRE Alpine | Full JDK image | ~150MB vs ~500MB; no build tools in runtime; non-root user |
 | Testing infra | Testcontainers (real Postgres + Redis) | H2 / embedded Redis | Tests prove production behaviour, not substitute behaviour; eliminates "works in H2, fails in Postgres" class of bugs |
-| Auditing | JPA `@CreatedDate`/`@LastModifiedDate` + async event emission | Hibernate Envers | Envers shadow tables redundant when compliance trail is externalised; JPA auditing is zero-overhead housekeeping |
 | Secrets | Environment variable injection (`.env` / Secrets Manager) | Hardcoded in config or Spring profiles | 12-Factor compliant; same artifact in every environment; zero risk of credential commit |
+| API documentation | Springdoc OpenAPI 3.1 + Swagger UI | Manual Postman / static docs | Spec generated from code — never drifts; custom `OperationCustomizer` auto-injects platform headers (`X-ICE-Version`, `X-Actor-Id`, `X-Idempotency-Key`) |
 
 ---
 
@@ -597,10 +720,7 @@ This project was developed using TDD (Red → Green → Refactor) with feature b
 3. **Minimal implementation** to pass the test
 4. **Refactor** with all tests green
 5. **Commit** on feature branch with descriptive message
-6. **PR** to main branch
-7. **Merge** to main branch
-8. **Pull** from main branch
-9. **Feature branch** for next iteration
 
 ---
 
+*Built with a clear separation of concerns: the architect makes the structural decisions, the code follows.*
