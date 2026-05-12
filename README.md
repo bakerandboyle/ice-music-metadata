@@ -459,7 +459,7 @@ To maintain high throughput and separation of concerns, auditing is handled via 
 
 ```
 ┌──────────────┐    ┌───────────┐    ┌───────────┐    ┌─────────────────┐
-│  Metadata    │───▶│  SNS      │───▶│  SQS      │───▶│  Audit Service  │
+│  Metadata    │──▶│  SNS      │──▶│  SQS      │──▶│  Audit Service  │
 │  Service     │    │  Topic    │    │  Queue    │    │  (out of scope) │
 │  (emit only) │    └───────────┘    └───────────┘    │  → S3/Glacier   │
 └──────────────┘                                      │  → OpenSearch   │
